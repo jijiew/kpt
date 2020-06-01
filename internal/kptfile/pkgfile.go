@@ -68,6 +68,7 @@ type StarlarkFunction struct {
 // MergeOpenAPI adds the OpenAPI definitions from localKf to updatedKf.
 // It takes originalKf as a reference for 3-way merge
 // This function is very complex due to serialization issues with yaml.Node.
+// jijie: test that the delete works for this function
 func (updatedKf *KptFile) MergeOpenAPI(localKf, originalKf KptFile) error {
 	if localKf.OpenAPI == nil {
 		// no OpenAPI to copy -- do nothing
@@ -126,13 +127,31 @@ func (updatedKf *KptFile) MergeOpenAPI(localKf, originalKf KptFile) error {
 		if shouldSkipCopy(updatedDef, localDef, oriDef, key) {
 			return nil
 		}
+
 		// copy each definition from the source to the destination
 		return updatedDef.Value.PipeE(yaml.FieldSetter{
 			Name:  key,
 			Value: node.Value})
 	})
+
 	if err != nil {
 		return err
+	}
+
+    // handles the case where setter is deleted
+	err = updatedDef.Value.VisitFields(func(node *yaml.MapNode) error {
+		key := node.Key.YNode().Value
+		if shouldRemoveValue(updatedDef, localDef, oriDef, key) {
+			return updatedDef.Value.PipeE(yaml.FieldClearer{
+				Name: key,
+			})
+
+		}
+		return nil
+	})
+
+    if err != nil {
+    	return err
 	}
 
 	// convert the result back to type interface{} and set it on the Kptfile
@@ -144,6 +163,32 @@ func (updatedKf *KptFile) MergeOpenAPI(localKf, originalKf KptFile) error {
 	updatedKf.OpenAPI = newOpenAPI
 	err = yaml.Unmarshal([]byte(s), &updatedKf.OpenAPI)
 	return err
+}
+
+func shouldRemoveValue (updatedDef, localDef, originalDef *yaml.MapNode, key string) bool  {
+	localVal := localDef.Value.Field(key)
+	originalVal := originalDef.Value.Field(key)
+	updatedVal := updatedDef.Value.Field(key)
+
+	if originalVal == nil || updatedVal == nil {
+		return false
+	}
+
+	originalValStr, err := originalDef.Value.Field(key).Value.String()
+	if err != nil {
+		return false
+	}
+
+	updatedValStr, err := updatedDef.Value.Field(key).Value.String()
+	if err != nil {
+		return false
+	}
+
+	if localVal == nil && originalValStr == updatedValStr {
+		return true
+	}
+	//should resolve conflicts if original is not equal to updated.
+	return false
 }
 
 // shouldSkipCopy decides if a node with key should be copied from fromDef to toDef
